@@ -183,9 +183,14 @@ function deploy_snapshotter() {
         sed -i "s|^ExecStart=.*$|ExecStart=$COMMANDLINE|" "${SNAPSHOTTER_SERVICE}"
         nsenter -t 1 -m systemctl daemon-reload
         nsenter -t 1 -m systemctl enable nydus-snapshotter.service
+        # A socket file left behind by a previous (crashed or cleaned-up)
+        # snapshotter process would satisfy the readiness check below against
+        # a dead listener, so drop it before (re)starting the service.
+        rm -f "${SNAPSHOTTER_GRPC_SOCKET}"
         wait_service_active 30 5 nydus-snapshotter
     else
         echo "running snapshotter as standalone process"
+        rm -f "${SNAPSHOTTER_GRPC_SOCKET}"
         ${COMMANDLINE} &
     fi
 
@@ -202,15 +207,19 @@ function deploy_snapshotter() {
 }
 
 # Wait until the nydus snapshotter gRPC socket exists (bound), up to a timeout.
+# Aborts deployment if the socket never appears: restarting containerd without
+# it takes the node down, while aborting keeps the currently running containerd
+# alive and surfaces the failure as a pod error.
 function wait_for_nydus_socket() {
-    local wait_time="${NYDUS_SOCKET_WAIT_TIMEOUT:-30}"
+    local timeout="${NYDUS_SOCKET_WAIT_TIMEOUT:-30}"
+    local wait_time="${timeout}"
     while [ "$wait_time" -gt 0 ] && [ ! -S "${SNAPSHOTTER_GRPC_SOCKET}" ]; do
         echo "waiting for nydus snapshotter socket ${SNAPSHOTTER_GRPC_SOCKET}"
         sleep 1
         wait_time=$((wait_time - 1))
     done
     if [ ! -S "${SNAPSHOTTER_GRPC_SOCKET}" ]; then
-        echo "WARNING: nydus snapshotter socket not ready after timeout"
+        die "nydus snapshotter socket ${SNAPSHOTTER_GRPC_SOCKET} not ready after ${timeout}s"
     fi
 }
 
