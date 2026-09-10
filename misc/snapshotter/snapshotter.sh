@@ -188,8 +188,30 @@ function deploy_snapshotter() {
         echo "running snapshotter as standalone process"
         ${COMMANDLINE} &
     fi
+
+    # containerd's CRI plugin resolves the default snapshotter at init. If
+    # containerd restarts before the nydus snapshotter has bound its gRPC socket,
+    # the CRI plugin fails to load with "failed to find snapshotter \"nydus\"" and
+    # the node goes NotReady ("container runtime is down"). This race shows up on
+    # every pod re-deploy / rolling update. Wait for the socket to be ready before
+    # restarting containerd.
+    wait_for_nydus_socket
+
     wait_service_active 30 5 ${CONTAINER_RUNTIME}
 
+}
+
+# Wait until the nydus snapshotter gRPC socket exists (bound), up to a timeout.
+function wait_for_nydus_socket() {
+    local wait_time="${NYDUS_SOCKET_WAIT_TIMEOUT:-30}"
+    while [ "$wait_time" -gt 0 ] && [ ! -S "${SNAPSHOTTER_GRPC_SOCKET}" ]; do
+        echo "waiting for nydus snapshotter socket ${SNAPSHOTTER_GRPC_SOCKET}"
+        sleep 1
+        wait_time=$((wait_time - 1))
+    done
+    if [ ! -S "${SNAPSHOTTER_GRPC_SOCKET}" ]; then
+        echo "WARNING: nydus snapshotter socket not ready after timeout"
+    fi
 }
 
 function remove_images() {
